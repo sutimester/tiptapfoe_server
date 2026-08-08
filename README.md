@@ -22,3 +22,8 @@ Start command:
     uvicorn app:app --host 0.0.0.0 --port $PORT
 
 Nincsenek kezdő szobák. Szoba csak a Create Room gomb által hívott `POST /rooms` után létezik.
+
+## START-ready protokoll
+
+A szerver a két szín kiválasztása után nem indítja automatikusan a játékot.
+A kliens `start_game` WebSocket üzenetet küld a START gomb megnyomásakor; a szerver csak két csatlakozott, eltérő színt választott játékos esetén broadcastolja a `game_start` üzenetet.

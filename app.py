@@ -177,19 +177,33 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                     room.colors[sender_symbol] = color_index
                     await broadcast_lobby_state(room)
 
-                    if (
-                        room.player_count() == 2
-                        and room.colors['X'] is not None
-                        and room.colors['O'] is not None
-                        and room.colors['X'] != room.colors['O']
-                    ):
-                        room.started = True
-                        room.current_symbol = 'X'
-                        await broadcast(room, {
-                            'type': 'game_start',
-                            'colors': dict(room.colors),
-                            'current_symbol': room.current_symbol,
-                        })
+                    # Selecting both colors only makes the room ready.
+                    # The match starts only after a player presses START.
+                    continue
+
+                if msg_type == 'start_game':
+                    if room.started:
+                        continue
+
+                    if room.player_count() != 2:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Two players are required'})
+                        continue
+
+                    if room.colors['X'] is None or room.colors['O'] is None:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Both players must choose a color'})
+                        continue
+
+                    if room.colors['X'] == room.colors['O']:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Players must use different colors'})
+                        continue
+
+                    room.started = True
+                    room.current_symbol = 'X'
+                    await broadcast(room, {
+                        'type': 'game_start',
+                        'colors': dict(room.colors),
+                        'current_symbol': room.current_symbol,
+                    })
                     continue
 
                 if msg_type == 'move':
