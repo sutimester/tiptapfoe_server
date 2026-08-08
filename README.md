@@ -48,3 +48,8 @@ Changing settings clears both players' START-ready state.
 - A READY gomb toggle: első kattintás READY, következő kattintás NOT READY.
 - Mindkét kliens automatikusan megkapja a READY és lobby-beállítás változásokat, kézi Refresh nélkül.
 - A játék csak akkor indul, amikor mindkét játékos egyszerre READY.
+
+
+## In-game restart READY
+
+During a started game clients may send `restart_toggle`. The server broadcasts `restart_state`. Each player can toggle their own restart confirmation. When both X and O are ready, the server clears move history, resets turn to X and broadcasts `restart_game` while preserving colors and lobby settings.

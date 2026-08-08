@@ -29,6 +29,7 @@ class Room:
     symbols: Dict[int, str] = field(default_factory=dict)
     colors: Dict[str, Optional[int]] = field(default_factory=lambda: {'X': None, 'O': None})
     start_ready: Dict[str, bool] = field(default_factory=lambda: {'X': False, 'O': False})
+    restart_ready: Dict[str, bool] = field(default_factory=lambda: {'X': False, 'O': False})
     settings: Dict[str, int] = field(default_factory=lambda: {
         'depth': 2,
         'medium_markers': 3,
@@ -260,11 +261,44 @@ async def websocket_room(websocket: WebSocket, room_code: str):
 
                     room.started = True
                     room.current_symbol = 'X'
+                    room.restart_ready['X'] = False
+                    room.restart_ready['O'] = False
                     await broadcast(room, {
                         'type': 'game_start',
                         'colors': dict(room.colors),
                         'current_symbol': room.current_symbol,
                         'settings': dict(room.settings),
+                    })
+                    continue
+
+                if msg_type == 'restart_toggle':
+                    if not room.started:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Game has not started'})
+                        continue
+
+                    # Restart works exactly like the lobby READY toggle.
+                    # Each player can turn their own request on/off independently.
+                    room.restart_ready[sender_symbol] = not room.restart_ready[sender_symbol]
+                    await broadcast(room, {
+                        'type': 'restart_state',
+                        'restart_ready': dict(room.restart_ready),
+                    })
+
+                    if not (room.restart_ready['X'] and room.restart_ready['O']):
+                        continue
+
+                    # Both players confirmed: clear the authoritative match history
+                    # and restart with the same colors/settings, X to move first.
+                    room.moves = []
+                    room.current_symbol = 'X'
+                    room.restart_ready['X'] = False
+                    room.restart_ready['O'] = False
+                    await broadcast(room, {
+                        'type': 'restart_game',
+                        'current_symbol': room.current_symbol,
+                        'colors': dict(room.colors),
+                        'settings': dict(room.settings),
+                        'restart_ready': dict(room.restart_ready),
                     })
                     continue
 
@@ -308,6 +342,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
             if symbol in ('X', 'O'):
                 room.colors[symbol] = None
                 room.start_ready[symbol] = False
+                room.restart_ready[symbol] = False
 
             # If the host (X) leaves, the room is removed. This also avoids ghost rooms.
             host_present = any(room.symbols.get(id(ws)) == 'X' for ws in room.clients)
@@ -329,4 +364,6 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                 room.colors['O'] = None
                 room.start_ready['X'] = False
                 room.start_ready['O'] = False
+                room.restart_ready['X'] = False
+                room.restart_ready['O'] = False
                 await broadcast_lobby_state(room)
