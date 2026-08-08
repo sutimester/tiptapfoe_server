@@ -22,3 +22,12 @@ Build command:
 Start command:
 
     uvicorn app:app --host 0.0.0.0 --port $PORT
+
+
+## v36 - Alternating restart starter
+
+- A room now stores `starting_symbol`.
+- The first match starts with X.
+- When both players confirm Restart, the server alternates X/O.
+- `game_restart` broadcasts both `current_symbol` and `starting_symbol`.
+- If the guest leaves and the room returns to the lobby, the series resets to X for the next opponent.

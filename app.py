@@ -38,6 +38,7 @@ class Room:
     moves: List[dict] = field(default_factory=list)
     started: bool = False
     current_symbol: str = 'X'
+    starting_symbol: str = 'X'
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def player_count(self):
@@ -159,6 +160,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
             'restart_ready': dict(room.restart_ready),
             'settings': dict(room.settings),
             'public': room.public,
+            'starting_symbol': room.starting_symbol,
         })
         await broadcast_lobby(room)
 
@@ -241,12 +243,13 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                     await broadcast_lobby(room)
                     if room.start_ready['X'] and room.start_ready['O']:
                         room.started = True
-                        room.current_symbol = 'X'
+                        room.current_symbol = room.starting_symbol
                         room.restart_ready = {'X': False, 'O': False}
                         await broadcast(room, {
                             'type': 'game_start',
                             'colors': dict(room.colors),
                             'current_symbol': room.current_symbol,
+                            'starting_symbol': room.starting_symbol,
                             'settings': dict(room.settings),
                         })
                     continue
@@ -280,11 +283,14 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                     })
                     if room.restart_ready['X'] and room.restart_ready['O']:
                         room.moves = []
-                        room.current_symbol = 'X'
+                        # Alternate the starting player on every accepted restart.
+                        room.starting_symbol = 'O' if room.starting_symbol == 'X' else 'X'
+                        room.current_symbol = room.starting_symbol
                         room.restart_ready = {'X': False, 'O': False}
                         await broadcast(room, {
                             'type': 'game_restart',
-                            'current_symbol': 'X',
+                            'current_symbol': room.current_symbol,
+                            'starting_symbol': room.starting_symbol,
                             'restart_ready': dict(room.restart_ready),
                         })
                     continue
@@ -321,7 +327,8 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                 # Guest left: keep the host room alive and discoverable only if public.
                 room.started = False
                 room.moves = []
-                room.current_symbol = 'X'
+                room.starting_symbol = 'X'
+                room.current_symbol = room.starting_symbol
                 room.colors['O'] = None
                 room.start_ready = {'X': False, 'O': False}
                 room.restart_ready = {'X': False, 'O': False}
