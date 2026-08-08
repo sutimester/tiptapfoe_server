@@ -27,3 +27,7 @@ Nincsenek kezdő szobák. Szoba csak a Create Room gomb által hívott `POST /ro
 
 A szerver a két szín kiválasztása után nem indítja automatikusan a játékot.
 A kliens `start_game` WebSocket üzenetet küld a START gomb megnyomásakor; a szerver csak két csatlakozott, eltérő színt választott játékos esetén broadcastolja a `game_start` üzenetet.
+
+## Dual START protocol
+
+A `start_game` üzenet már nem azonnali indítás: az adott játékos START-ready állapotát állítja be. A szerver `start_state` és `color_state` üzenetekkel azonnal szinkronizálja mindkét klienst. `game_start` csak akkor megy ki, amikor X és O is START-ready.

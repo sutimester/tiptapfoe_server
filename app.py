@@ -28,6 +28,7 @@ class Room:
     clients: List[WebSocket] = field(default_factory=list)
     symbols: Dict[int, str] = field(default_factory=dict)
     colors: Dict[str, Optional[int]] = field(default_factory=lambda: {'X': None, 'O': None})
+    start_ready: Dict[str, bool] = field(default_factory=lambda: {'X': False, 'O': False})
     moves: List[dict] = field(default_factory=list)
     started: bool = False
     current_symbol: str = 'X'
@@ -86,6 +87,7 @@ async def broadcast_lobby_state(room: Room):
             'X': room.colors['X'] is not None,
             'O': room.colors['O'] is not None,
         },
+        'start_ready': dict(room.start_ready),
     })
 
 
@@ -141,6 +143,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
             'symbol': symbol,
             'moves': list(room.moves),
             'colors': dict(room.colors),
+            'start_ready': dict(room.start_ready),
         })
         await broadcast_lobby_state(room)
 
@@ -175,6 +178,8 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                         continue
 
                     room.colors[sender_symbol] = color_index
+                    # Changing color cancels this player's START-ready state.
+                    room.start_ready[sender_symbol] = False
                     await broadcast_lobby_state(room)
 
                     # Selecting both colors only makes the room ready.
@@ -195,6 +200,19 @@ async def websocket_room(websocket: WebSocket, room_code: str):
 
                     if room.colors['X'] == room.colors['O']:
                         await safe_send(websocket, {'type': 'error', 'message': 'Players must use different colors'})
+                        continue
+
+                    # START is a per-player ready confirmation. The server
+                    # broadcasts it immediately so both clients update automatically.
+                    room.start_ready[sender_symbol] = True
+                    await broadcast(room, {
+                        'type': 'start_state',
+                        'start_ready': dict(room.start_ready),
+                    })
+                    await broadcast_lobby_state(room)
+
+                    # The match starts only after BOTH players pressed START.
+                    if not (room.start_ready['X'] and room.start_ready['O']):
                         continue
 
                     room.started = True
@@ -245,6 +263,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
 
             if symbol in ('X', 'O'):
                 room.colors[symbol] = None
+                room.start_ready[symbol] = False
 
             # If the host (X) leaves, the room is removed. This also avoids ghost rooms.
             host_present = any(room.symbols.get(id(ws)) == 'X' for ws in room.clients)
@@ -264,4 +283,6 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                 room.moves = []
                 room.current_symbol = 'X'
                 room.colors['O'] = None
+                room.start_ready['X'] = False
+                room.start_ready['O'] = False
                 await broadcast_lobby_state(room)
