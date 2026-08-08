@@ -29,6 +29,11 @@ class Room:
     symbols: Dict[int, str] = field(default_factory=dict)
     colors: Dict[str, Optional[int]] = field(default_factory=lambda: {'X': None, 'O': None})
     start_ready: Dict[str, bool] = field(default_factory=lambda: {'X': False, 'O': False})
+    settings: Dict[str, int] = field(default_factory=lambda: {
+        'depth': 2,
+        'medium_markers': 3,
+        'large_markers': 3,
+    })
     moves: List[dict] = field(default_factory=list)
     started: bool = False
     current_symbol: str = 'X'
@@ -88,6 +93,7 @@ async def broadcast_lobby_state(room: Room):
             'O': room.colors['O'] is not None,
         },
         'start_ready': dict(room.start_ready),
+        'settings': dict(room.settings),
     })
 
 
@@ -144,6 +150,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
             'moves': list(room.moves),
             'colors': dict(room.colors),
             'start_ready': dict(room.start_ready),
+            'settings': dict(room.settings),
         })
         await broadcast_lobby_state(room)
 
@@ -155,6 +162,40 @@ async def websocket_room(websocket: WebSocket, room_code: str):
             async with room.lock:
                 sender_symbol = room.symbols.get(id(websocket))
                 if sender_symbol not in ('X', 'O'):
+                    continue
+
+                if msg_type == 'settings_update':
+                    if room.started:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Game already started'})
+                        continue
+
+                    try:
+                        depth = int(data.get('depth'))
+                        medium = int(data.get('medium_markers'))
+                        large = int(data.get('large_markers'))
+                    except (TypeError, ValueError):
+                        await safe_send(websocket, {'type': 'error', 'message': 'Invalid match settings'})
+                        continue
+
+                    if depth < 1 or depth > 3 or medium < 0 or medium > 9 or large < 0 or large > 9:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Match settings out of range'})
+                        continue
+
+                    room.settings = {
+                        'depth': depth,
+                        'medium_markers': medium,
+                        'large_markers': large,
+                    }
+
+                    # Any match-setting change invalidates both START confirmations.
+                    room.start_ready['X'] = False
+                    room.start_ready['O'] = False
+                    await broadcast(room, {
+                        'type': 'settings_state',
+                        'settings': dict(room.settings),
+                        'start_ready': dict(room.start_ready),
+                    })
+                    await broadcast_lobby_state(room)
                     continue
 
                 if msg_type == 'color_select':
@@ -186,7 +227,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                     # The match starts only after a player presses START.
                     continue
 
-                if msg_type == 'start_game':
+                if msg_type in ('ready_toggle', 'start_game'):
                     if room.started:
                         continue
 
@@ -202,16 +243,18 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                         await safe_send(websocket, {'type': 'error', 'message': 'Players must use different colors'})
                         continue
 
-                    # START is a per-player ready confirmation. The server
-                    # broadcasts it immediately so both clients update automatically.
-                    room.start_ready[sender_symbol] = True
+                    # READY is a per-player toggle. Clicking it again cancels
+                    # the player's ready state. Broadcast immediately so both
+                    # clients always display the same state without Refresh.
+                    room.start_ready[sender_symbol] = not room.start_ready[sender_symbol]
                     await broadcast(room, {
                         'type': 'start_state',
                         'start_ready': dict(room.start_ready),
+                        'settings': dict(room.settings),
                     })
                     await broadcast_lobby_state(room)
 
-                    # The match starts only after BOTH players pressed START.
+                    # The match starts only while BOTH players are READY.
                     if not (room.start_ready['X'] and room.start_ready['O']):
                         continue
 
@@ -221,6 +264,7 @@ async def websocket_room(websocket: WebSocket, room_code: str):
                         'type': 'game_start',
                         'colors': dict(room.colors),
                         'current_symbol': room.current_symbol,
+                        'settings': dict(room.settings),
                     })
                     continue
 

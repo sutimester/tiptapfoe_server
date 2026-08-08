@@ -31,3 +31,20 @@ A kliens `start_game` WebSocket üzenetet küld a START gomb megnyomásakor; a s
 ## Dual START protocol
 
 A `start_game` üzenet már nem azonnali indítás: az adott játékos START-ready állapotát állítja be. A szerver `start_state` és `color_state` üzenetekkel azonnal szinkronizálja mindkét klienst. `game_start` csak akkor megy ki, amikor X és O is START-ready.
+
+
+## Lobby settings protocol
+
+New WebSocket message from client:
+`settings_update` with `depth`, `medium_markers`, `large_markers`.
+The server broadcasts `settings_state` and includes `settings` in lobby state, assign and game_start payloads.
+Changing settings clears both players' START-ready state.
+
+
+## v22 lobby sync
+
+- A Board Depth, Starting Medium Markers és Starting Large Markers módosítása bármelyik kliensről azonnal WebSocketen frissül mindkét játékosnál.
+- Bármely pályabeállítás-változás mindkét READY állapotot kikapcsolja.
+- A READY gomb toggle: első kattintás READY, következő kattintás NOT READY.
+- Mindkét kliens automatikusan megkapja a READY és lobby-beállítás változásokat, kézi Refresh nélkül.
+- A játék csak akkor indul, amikor mindkét játékos egyszerre READY.
