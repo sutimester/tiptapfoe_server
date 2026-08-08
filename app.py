@@ -1,222 +1,253 @@
 import asyncio
-import json
-import os
 import random
 import string
-import time
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-
-ROOM_TTL_SECONDS = int(os.getenv('ROOM_TTL_SECONDS', '7200'))
-MAX_ROOMS = int(os.getenv('MAX_ROOMS', '500'))
-
-app = FastAPI(title='Recursive Tic Tac Toe Online Server')
+app = FastAPI(title='Recursive TTT Server')
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=['*'],
     allow_headers=['*'],
 )
 
-rooms: Dict[str, dict] = {}
-lock = asyncio.Lock()
+ROOM_CODE_CHARS = string.ascii_uppercase + string.digits
+PALETTE_SIZE = 8
 
 
-def make_code() -> str:
-    chars = string.ascii_uppercase + string.digits
+@dataclass
+class Room:
+    code: str
+    name: str
+    clients: List[WebSocket] = field(default_factory=list)
+    symbols: Dict[int, str] = field(default_factory=dict)
+    colors: Dict[str, Optional[int]] = field(default_factory=lambda: {'X': None, 'O': None})
+    moves: List[dict] = field(default_factory=list)
+    started: bool = False
+    current_symbol: str = 'X'
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    def player_count(self):
+        return len(self.clients)
+
+
+rooms: Dict[str, Room] = {}
+room_counter = 0
+rooms_lock = asyncio.Lock()
+
+
+def make_room_code():
     while True:
-        code = ''.join(random.choice(chars) for _ in range(4))
-
+        code = ''.join(random.choice(ROOM_CODE_CHARS) for _ in range(4))
         if code not in rooms:
             return code
 
 
-def cleanup_rooms() -> None:
-    now = time.time()
-    expired = []
-
-    for code, room in rooms.items():
-        if room['clients']:
-            continue
-
-        if now - room['updated_at'] > ROOM_TTL_SECONDS:
-            expired.append(code)
-
-    for code in expired:
-        rooms.pop(code, None)
+def room_payload(room: Room):
+    return {
+        'code': room.code,
+        'name': room.name,
+        'players': room.player_count(),
+        'status': 'In Game' if room.started else 'Waiting',
+    }
 
 
-async def broadcast(room: dict, payload: dict) -> None:
-    message = json.dumps(payload)
-    dead: List[WebSocket] = []
+async def safe_send(ws: WebSocket, payload: dict):
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:
+        return False
 
-    for websocket in list(room['clients']):
-        try:
-            await websocket.send_text(message)
-        except Exception:
-            dead.append(websocket)
 
-    for websocket in dead:
-        if websocket in room['clients']:
-            room['clients'].remove(websocket)
+async def broadcast(room: Room, payload: dict):
+    dead = []
+    for ws in list(room.clients):
+        if not await safe_send(ws, payload):
+            dead.append(ws)
+    for ws in dead:
+        if ws in room.clients:
+            room.clients.remove(ws)
+        room.symbols.pop(id(ws), None)
+
+
+async def broadcast_lobby_state(room: Room):
+    await broadcast(room, {'type': 'players', 'count': room.player_count()})
+    await broadcast(room, {
+        'type': 'color_state',
+        'colors': dict(room.colors),
+        'ready': {
+            'X': room.colors['X'] is not None,
+            'O': room.colors['O'] is not None,
+        },
+    })
 
 
 @app.get('/')
 async def root():
-    return {
-        'status': 'ok',
-        'service': 'recursive-ttt-server'
-    }
-
-
-@app.get('/health')
-async def health():
-    return {'status': 'healthy'}
-
-
-@app.post('/rooms')
-async def create_room():
-    async with lock:
-        cleanup_rooms()
-
-        if len(rooms) >= MAX_ROOMS:
-            raise HTTPException(status_code=429, detail='Too many rooms')
-
-        code = make_code()
-        rooms[code] = {
-            'code': code,
-            'created_at': time.time(),
-            'updated_at': time.time(),
-            'moves': [],
-            'clients': [],
-            'symbols': {}
-        }
-
-    return {'code': code}
+    return {'ok': True, 'service': 'recursive-ttt-server'}
 
 
 @app.get('/rooms')
 async def list_rooms():
-    async with lock:
-        cleanup_rooms()
-
-        visible = []
-
-        for room in rooms.values():
-            players = len(room['clients'])
-
-            if players >= 2:
-                continue
-
-            visible.append({
-                'code': room['code'],
-                'players': players,
-                'created_at': room['created_at']
-            })
-
-        visible.sort(key=lambda item: item['created_at'], reverse=True)
-
-    return {'rooms': visible[:50]}
+    # No starter/default rooms. Only rooms explicitly created by Create Room exist.
+    open_rooms = [
+        room_payload(room)
+        for room in rooms.values()
+        if room.player_count() > 0 and room.player_count() < 2 and not room.started
+    ]
+    return {'rooms': open_rooms}
 
 
-@app.websocket('/ws/{code}')
-async def websocket_room(websocket: WebSocket, code: str):
-    code = code.upper()
+@app.post('/rooms')
+async def create_room():
+    global room_counter
+    async with rooms_lock:
+        room_counter += 1
+        code = make_room_code()
+        room = Room(code=code, name='Room %d' % room_counter)
+        rooms[code] = room
+    return room_payload(room)
+
+
+@app.websocket('/ws/{room_code}')
+async def websocket_room(websocket: WebSocket, room_code: str):
+    code = room_code.upper()
+    room = rooms.get(code)
+    if room is None:
+        await websocket.close(code=4404, reason='Room not found')
+        return
+
     await websocket.accept()
 
-    async with lock:
-        cleanup_rooms()
-
-        if code not in rooms:
-            await websocket.send_text(json.dumps({
-                'type': 'error',
-                'message': 'Room not found'
-            }))
-            await websocket.close()
+    async with room.lock:
+        if len(room.clients) >= 2:
+            await websocket.send_json({'type': 'error', 'message': 'Room is full'})
+            await websocket.close(code=4409, reason='Room full')
             return
 
-        room = rooms[code]
+        symbol = 'X' if len(room.clients) == 0 else 'O'
+        room.clients.append(websocket)
+        room.symbols[id(websocket)] = symbol
 
-        if len(room['clients']) >= 2:
-            await websocket.send_text(json.dumps({
-                'type': 'error',
-                'message': 'Room is full'
-            }))
-            await websocket.close()
-            return
-
-        symbol = 'X' if len(room['clients']) == 0 else 'O'
-        room['clients'].append(websocket)
-        room['symbols'][websocket] = symbol
-        room['updated_at'] = time.time()
-
-        moves = list(room['moves'])
-        count = len(room['clients'])
-
-    await websocket.send_text(json.dumps({
-        'type': 'assign',
-        'symbol': symbol,
-        'room': code,
-        'moves': moves
-    }))
-
-    await broadcast(room, {
-        'type': 'players',
-        'count': count
-    })
+        await websocket.send_json({
+            'type': 'assign',
+            'symbol': symbol,
+            'moves': list(room.moves),
+            'colors': dict(room.colors),
+        })
+        await broadcast_lobby_state(room)
 
     try:
         while True:
-            raw = await websocket.receive_text()
+            data = await websocket.receive_json()
+            msg_type = data.get('type')
 
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+            async with room.lock:
+                sender_symbol = room.symbols.get(id(websocket))
+                if sender_symbol not in ('X', 'O'):
+                    continue
 
-            if data.get('type') != 'move':
-                continue
+                if msg_type == 'color_select':
+                    if room.started:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Game already started'})
+                        continue
 
-            symbol = room['symbols'].get(websocket)
+                    try:
+                        color_index = int(data.get('color_index'))
+                    except (TypeError, ValueError):
+                        await safe_send(websocket, {'type': 'error', 'message': 'Invalid color'})
+                        continue
 
-            move = {
-                'type': 'move',
-                'symbol': symbol,
-                'path': data.get('path'),
-                'size': data.get('size'),
-                'number': len(room['moves'])
-            }
+                    if color_index < 0 or color_index >= PALETTE_SIZE:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Invalid color'})
+                        continue
 
-            async with lock:
-                room['moves'].append(move)
-                room['updated_at'] = time.time()
+                    other_symbol = 'O' if sender_symbol == 'X' else 'X'
+                    if room.colors.get(other_symbol) == color_index:
+                        await safe_send(websocket, {'type': 'error', 'message': 'That color is already selected'})
+                        continue
 
-            await broadcast(room, move)
+                    room.colors[sender_symbol] = color_index
+                    await broadcast_lobby_state(room)
+
+                    if (
+                        room.player_count() == 2
+                        and room.colors['X'] is not None
+                        and room.colors['O'] is not None
+                        and room.colors['X'] != room.colors['O']
+                    ):
+                        room.started = True
+                        room.current_symbol = 'X'
+                        await broadcast(room, {
+                            'type': 'game_start',
+                            'colors': dict(room.colors),
+                            'current_symbol': room.current_symbol,
+                        })
+                    continue
+
+                if msg_type == 'move':
+                    if not room.started:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Both players must choose a color first'})
+                        continue
+                    if sender_symbol != room.current_symbol:
+                        await safe_send(websocket, {'type': 'error', 'message': 'Not your turn'})
+                        continue
+
+                    path = data.get('path')
+                    size = data.get('size')
+                    if not isinstance(path, list) or size not in (1, 2, 3):
+                        await safe_send(websocket, {'type': 'error', 'message': 'Invalid move'})
+                        continue
+
+                    move = {
+                        'type': 'move',
+                        'symbol': sender_symbol,
+                        'path': path,
+                        'size': size,
+                    }
+                    room.moves.append(move)
+                    room.current_symbol = 'O' if sender_symbol == 'X' else 'X'
+                    await broadcast(room, move)
+                    continue
+
+                await safe_send(websocket, {'type': 'error', 'message': 'Unknown message type'})
 
     except WebSocketDisconnect:
         pass
+    except Exception:
+        pass
     finally:
-        async with lock:
-            room = rooms.get(code)
+        async with room.lock:
+            symbol = room.symbols.pop(id(websocket), None)
+            if websocket in room.clients:
+                room.clients.remove(websocket)
 
-            if room:
-                if websocket in room['clients']:
-                    room['clients'].remove(websocket)
+            if symbol in ('X', 'O'):
+                room.colors[symbol] = None
 
-                room['symbols'].pop(websocket, None)
-                room['updated_at'] = time.time()
-                count = len(room['clients'])
+            # If the host (X) leaves, the room is removed. This also avoids ghost rooms.
+            host_present = any(room.symbols.get(id(ws)) == 'X' for ws in room.clients)
+            if not host_present:
+                for ws in list(room.clients):
+                    await safe_send(ws, {'type': 'error', 'message': 'Host left. Room closed.'})
+                    try:
+                        await ws.close(code=4410, reason='Host left')
+                    except Exception:
+                        pass
+                room.clients.clear()
+                room.symbols.clear()
+                rooms.pop(code, None)
             else:
-                count = 0
-
-        if code in rooms:
-            await broadcast(rooms[code], {
-                'type': 'players',
-                'count': count
-            })
+                # Guest left: return to pre-game waiting state and allow another guest.
+                room.started = False
+                room.moves = []
+                room.current_symbol = 'X'
+                room.colors['O'] = None
+                await broadcast_lobby_state(room)

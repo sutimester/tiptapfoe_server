@@ -1,33 +1,24 @@
-# Recursive Tic Tac Toe Online Server
+# Recursive TTT server - online color ready
 
-FastAPI + WebSocket szerver Renderre optimalizálva.
+Render-kompatibilis FastAPI + WebSocket szerver.
 
-## Local futtatás
+## Új online folyamat
 
-```bash
-pip install -r requirements.txt
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
-```
+1. `POST /rooms` létrehozza a szobát és 4 karakteres kódot ad.
+2. Az első WebSocket kliens X, a második O.
+3. Mindkét kliens `color_select` üzenettel választ a 0..7 palettából.
+4. Azonos szín nem foglalható.
+5. Csak akkor érkezik `game_start`, ha mindkét játékos csatlakozott és eltérő színt választott.
+6. `move` csak `game_start` után engedélyezett.
 
-A kliensben a `config.py` fájlban ez legyen:
+## Render
 
-```python
-self.online_server_url = "http://localhost:8000"
-```
+Build command:
 
-## Render deploy
+    pip install -r requirements.txt
 
-1. Töltsd fel ezt a szerver mappát GitHubra.
-2. Renderen válaszd a Blueprint / `render.yaml` deployt.
-3. Deploy után a kapott URL-t írd be a játék `config.py` fájljába:
+Start command:
 
-```python
-self.online_server_url = "https://SAJAT-RENDER-URL.onrender.com"
-```
+    uvicorn app:app --host 0.0.0.0 --port $PORT
 
-## API
-
-- `GET /health` health check
-- `POST /rooms` új 4 karakteres szobakód
-- `GET /rooms` szobakereső lista
-- `WS /ws/{code}` online játék websocket
+Nincsenek kezdő szobák. Szoba csak a Create Room gomb által hívott `POST /rooms` után létezik.
